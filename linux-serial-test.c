@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <signal.h>
 #include <poll.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -18,6 +19,7 @@
 #include <errno.h>
 #include <sys/file.h>
 
+static void dump_serial_port_stats(void);
 /*
  * glibc for MIPS has its own bits/termios.h which does not define
  * CMSPAR, so we vampirise the value from the generic bits/termios.h
@@ -76,8 +78,12 @@ long long int _write_count = 0;
 long long int _read_count = 0;
 long long int _error_count = 0;
 
+
+
 static void exit_handler(void)
 {
+    _cl_no_rx = _cl_no_tx = 1;
+        dump_serial_port_stats();
 	if (_fd >= 0) {
 		flock(_fd, LOCK_UN);
 		close(_fd);
@@ -235,19 +241,19 @@ void set_modem_lines(int fd, int bits, int mask)
 {
 	int status, ret;
 
-	if (ioctl(fd, TIOCMGET, &status) < 0) {
-		ret = -errno;
-		perror("TIOCMGET failed");
-		exit(ret);
-	}
+	/* if (ioctl(fd, TIOCMGET, &status) < 0) { */
+	/* 	ret = -errno; */
+	/* 	perror("TIOCMGET failed"); */
+	/* 	/\* exit(ret); *\/ */
+	/* } */
 
-	status = (status & ~mask) | (bits & mask);
+	/* status = (status & ~mask) | (bits & mask); */
 
-	if (ioctl(fd, TIOCMSET, &status) < 0) {
-		ret = -errno;
-		perror("TIOCMSET failed");
-		exit(ret);
-	}
+	/* if (ioctl(fd, TIOCMSET, &status) < 0) { */
+	/* 	ret = -errno; */
+	/* 	perror("TIOCMSET failed"); */
+	/* 	/\* exit(ret); *\/ */
+	/* } */
 }
 
 static void display_help(void)
@@ -442,14 +448,14 @@ static void dump_serial_port_stats(void)
 
 	printf("%s: count for this session: rx=%lld, tx=%lld, rx err=%lld\n", _cl_port, _read_count, _write_count, _error_count);
 
-	int ret = ioctl(_fd, TIOCGICOUNT, &icount);
-	if (ret < 0) {
-		perror("Error getting TIOCGICOUNT");
-	} else {
-		printf("%s: TIOCGICOUNT: ret=%i, rx=%i, tx=%i, frame = %i, overrun = %i, parity = %i, brk = %i, buf_overrun = %i\n",
-				_cl_port, ret, icount.rx, icount.tx, icount.frame, icount.overrun, icount.parity, icount.brk,
-				icount.buf_overrun);
-	}
+	/* int ret = ioctl(_fd, TIOCGICOUNT, &icount); */
+	/* if (ret < 0) { */
+	/* 	perror("Error getting TIOCGICOUNT"); */
+	/* } else { */
+	/* 	printf("%s: TIOCGICOUNT: ret=%i, rx=%i, tx=%i, frame = %i, overrun = %i, parity = %i, brk = %i, buf_overrun = %i\n", */
+	/* 			_cl_port, ret, icount.rx, icount.tx, icount.frame, icount.overrun, icount.parity, icount.brk, */
+	/* 			icount.buf_overrun); */
+	/* } */
 }
 
 static unsigned char next_count_value(unsigned char c)
@@ -654,11 +660,15 @@ static int compute_error_count(void)
 	return (result > 125) ? 125 : (int)result;
 }
 
+
+
+
 int main(int argc, char * argv[])
 {
 	printf("Linux serial test app\n");
 
 	atexit(&exit_handler);
+        signal(SIGINT, &exit_handler);
 
 	process_options(argc, argv);
 
