@@ -36,68 +36,129 @@ static void dump_serial_port_stats(void);
 #endif
 
 // command line args
-int _cl_baud = 0;
-char *_cl_port = NULL;
-int _cl_divisor = 0;
-int _cl_rx_dump = 0;
-int _cl_rx_dump_ascii = 0;
-int _cl_tx_detailed = 0;
-int _cl_stats = 0;
-int _cl_stop_on_error = 0;
-int _cl_single_byte = -1;
-int _cl_another_byte = -1;
-int _cl_rts_cts = 0;
-int _cl_2_stop_bit = 0;
-int _cl_parity = 0;
-int _cl_odd_parity = 0;
-int _cl_stick_parity = 0;
-int _cl_loopback = 0;
-int _cl_dump_err = 0;
-int _cl_no_rx = 0;
-int _cl_no_tx = 0;
-int _cl_rx_delay = 0;
-int _cl_tx_delay = 0;
-int _cl_tx_bytes = 0;
-int _cl_rs485_after_delay = -1;
-int _cl_rs485_before_delay = 0;
-int _cl_rs485_rts_after_send = 0;
-int _cl_tx_time = 0;
-int _cl_rx_time = 0;
-int _cl_ascii_range = 0;
-int _cl_write_after_read = 0;
-
-// Module variables
-unsigned char _write_count_value = 0;
-unsigned char _read_count_value = 0;
-int _fd = -1;
-unsigned char * _write_data;
-ssize_t _write_size;
-
-// keep our own counts for cases where the driver stats don't work
-long long int _write_count = 0;
-long long int _read_count = 0;
-long long int _error_count = 0;
-
-
-
-static void exit_handler(void)
+typedef struct cmdopts_t
 {
-    _cl_no_rx = _cl_no_tx = 1;
-        dump_serial_port_stats();
-	if (_fd >= 0) {
-		flock(_fd, LOCK_UN);
-		close(_fd);
-	}
+    int baud ;
+    char* port ;
+    int divisor ;
+    int rx_dump ;
+    int rx_dump_ascii ;
+    int tx_detailed ;
+    int stats ;
+    int stop_on_error ;
+    int single_byte ;
+    int another_byte ;
+    int rts_cts ;
+    int two_stop_bit;
+    int parity ;
+    int odd_parity ;
+    int stick_parity ;
+    int loopback ;
+    int dump_err ;
+    int no_rx ;
+    int no_tx ;
+    int rx_delay ;
+    int tx_delay ;
+    int tx_bytes ;
+    int tx_time ;
+    int rx_time ;
+    int ascii_range ;
+    int write_after_read ;
+} cmdopts_t ;
 
-	if (_cl_port) {
-		free(_cl_port);
-		_cl_port = NULL;
-	}
 
-	if (_write_data) {
-		free(_write_data);
-		_write_data = NULL;
-	}
+#define START_CLOCK(A)
+#define SERIAL_PORT_PROCESS()
+
+cmdopts_t clopts = (cmdopts_t){
+    .baud = 0,
+    .port = NULL,
+    .divisor = 0,
+    .rx_dump = 0,
+    .rx_dump_ascii = 0,
+    .tx_detailed = 0,
+    .stats = 0,
+    .stop_on_error = 0,
+    .single_byte = -1,
+    .another_byte = -1,
+    .rts_cts = 0,
+    .two_stop_bit = 0,
+    .parity = 0,
+    .odd_parity = 0,
+    .stick_parity = 0,
+    .loopback = 0,
+    .dump_err = 0,
+    .no_rx = 0,
+    .no_tx = 0,
+    .rx_delay = 0,
+    .tx_delay = 0,
+    .tx_bytes = 0,
+    .tx_time = 0,
+    .rx_time = 0,
+    .ascii_range = 0,
+    .write_after_read = 0,
+};
+
+typedef struct serial_stats_t
+{
+    // Module variables
+    unsigned char _write_count_value ;
+    unsigned char _read_count_value ;
+    int _fd ;
+    unsigned char* _write_data;
+    ssize_t _write_size;
+    // keep our own counts for cases where the driver stats don't work
+    long long int _write_count ;
+    long long int _read_count ;
+    long long int _error_count ;
+} serial_stats_t;
+
+serial_stats_t stats = (serial_stats_t){
+    ._write_count_value = 0,
+    ._read_count_value = 0,
+    ._fd = -1,
+    ._write_data = 0,
+    ._write_size = 0,
+    // keep our own counts for cases where the driver stats don't work
+    ._write_count = 0,
+    ._read_count = 0,
+    ._error_count = 0,  
+};
+
+typedef struct time_stats_t 
+{
+    struct timespec start_time;
+    struct timespec last_stat;
+    struct timespec last_timeout;
+    struct timespec last_read;
+    struct timespec last_write;
+    struct timespec current;
+} time_stats_t;
+
+
+time_stats_t timing = (time_stats_t){0};
+
+void exit_handler(int a)
+{
+    clopts.no_rx = clopts.no_tx = 1;
+    dump_serial_port_stats();
+    if (stats._fd >= 0)
+    {
+        flock(stats._fd, LOCK_UN);
+        close(stats._fd);
+    }
+
+    if (clopts.port)
+    {
+        free(clopts.port);
+        clopts.port = NULL;
+    }
+
+    if (stats._write_data)
+    {
+        free(stats._write_data);
+        stats._write_data = NULL;
+    }
 }
 
 static void dump_data(unsigned char * b, int count)
@@ -125,10 +186,10 @@ static void set_baud_divisor(int speed, int custom_divisor)
 	struct serial_struct ss;
 	int ret;
 
-	if (ioctl(_fd, TIOCGSERIAL, &ss) < 0) {
+	if (ioctl(stats._fd, TIOCGSERIAL, &ss) < 0) {
 		ret = -errno;
 		perror("TIOCGSERIAL failed");
-		exit(ret);
+		/* exit(ret); */
 	}
 
 	ss.flags = (ss.flags & ~ASYNC_SPD_MASK) | ASYNC_SPD_CUST;
@@ -147,7 +208,7 @@ static void set_baud_divisor(int speed, int custom_divisor)
 				ss.custom_divisor);
 	}
 
-	if (ioctl(_fd, TIOCSSERIAL, &ss) < 0) {
+	if (ioctl(stats._fd, TIOCSSERIAL, &ss) < 0) {
 		ret = -errno;
 		perror("TIOCSSERIAL failed");
 		exit(ret);
@@ -159,7 +220,7 @@ static void clear_custom_speed_flag()
 	struct serial_struct ss;
 	int ret;
 
-	if (ioctl(_fd, TIOCGSERIAL, &ss) < 0) {
+	if (ioctl(stats._fd, TIOCGSERIAL, &ss) < 0) {
 		// return silently as some devices do not support TIOCGSERIAL
 		return;
 	}
@@ -169,7 +230,7 @@ static void clear_custom_speed_flag()
 
 	ss.flags &= ~ASYNC_SPD_MASK;
 
-	if (ioctl(_fd, TIOCSSERIAL, &ss) < 0) {
+	if (ioctl(stats._fd, TIOCSSERIAL, &ss) < 0) {
 		ret = -errno;
 		perror("TIOCSSERIAL failed");
 		exit(ret);
@@ -283,11 +344,6 @@ static void display_help(void)
 			"  -a, --tx-delay     Delay between writing data (ms)\n"
 			"  -w, --tx-bytes     Number of bytes for each write (default is to repeatedly write 1024 bytes\n"
 			"                     until no more are accepted)\n"
-			"  -q, --rs485        Enable RS485 direction control on port, and set delay from when TX is\n"
-			"                     finished and RS485 driver enable is de-asserted. Delay is specified in\n"
-			"                     bit times. To optionally specify a delay from when the driver is enabled\n"
-			"                     to start of TX use 'after_delay.before_delay' (-q 1.1)\n"
-			"  -Q, --rs485_rts    Deassert RTS on send, assert after send. Omitting -Q inverts this logic.\n"
 			"  -o, --tx-time      Number of seconds to transmit for (defaults to 0, meaning no limit)\n"
 			"  -i, --rx-time      Number of seconds to receive for (defaults to 0, meaning no limit)\n"
 			"  -A, --ascii        Output bytes range from 32 to 126 (default is 0 to 255)\n"
@@ -295,173 +351,182 @@ static void display_help(void)
 	      );
 }
 
-static void process_options(int argc, char * argv[])
+static void process_command_line(int argc, char * argv[])
 {
-	for (;;) {
-		int option_index = 0;
-		static const char *short_options = "hb:p:d:R:TsSy:z:cBertq:Ql:a:w:o:i:P:kKA";
-		static const struct option long_options[] = {
-			{"help", no_argument, 0, 0},
-			{"baud", required_argument, 0, 'b'},
-			{"port", required_argument, 0, 'p'},
-			{"divisor", required_argument, 0, 'd'},
-			{"rx_dump", required_argument, 0, 'R'},
-			{"detailed_tx", no_argument, 0, 'T'},
-			{"stats", no_argument, 0, 's'},
-			{"stop-on-err", no_argument, 0, 'S'},
-			{"single-byte", no_argument, 0, 'y'},
-			{"second-byte", no_argument, 0, 'z'},
-			{"rts-cts", no_argument, 0, 'c'},
-			{"2-stop-bit", no_argument, 0, 'B'},
-			{"parity", required_argument, 0, 'P'},
-			{"loopback", no_argument, 0, 'k'},
-			{"write-follows", no_argument, 0, 'K'},
-			{"dump-err", no_argument, 0, 'e'},
-			{"no-rx", no_argument, 0, 'r'},
-			{"no-tx", no_argument, 0, 't'},
-			{"rx-delay", required_argument, 0, 'l'},
-			{"tx-delay", required_argument, 0, 'a'},
-			{"tx-bytes", required_argument, 0, 'w'},
-			{"rs485", required_argument, 0, 'q'},
-			{"rs485_rts", no_argument, 0, 'Q'},
-			{"tx-time", required_argument, 0, 'o'},
-			{"rx-time", required_argument, 0, 'i'},
-			{"ascii", no_argument, 0, 'A'},
-			{0,0,0,0},
-		};
+    for (;;)
+    {
+        int option_index = 0;
+        static const char* short_options = "hb:p:d:R:TsSy:z:cBertq:Ql:a:w:o:i:P:kKA";
+        // clang-format off
+        static const struct option long_options[] = {
+            { "help"            , no_argument         , 0   , 0 }     ,
+            { "baud"            , required_argument   , 0   , 'b' }   ,
+            { "port"            , required_argument   , 0   , 'p' }   ,
+            { "divisor"         , required_argument   , 0   , 'd' }   ,
+            { "rx_dump"         , required_argument   , 0   , 'R' }   ,
+            { "detailed_tx"     , no_argument         , 0   , 'T' }   ,
+            { "stats"           , no_argument         , 0   , 's' }   ,
+            { "stop-on-err"     , no_argument         , 0   , 'S' }   ,
+            { "single-byte"     , no_argument         , 0   , 'y' }   ,
+            { "second-byte"     , no_argument         , 0   , 'z' }   ,
+            { "rts-cts"         , no_argument         , 0   , 'c' }   ,
+            { "2-stop-bit"      , no_argument         , 0   , 'B' }   ,
+            { "parity"          , required_argument   , 0   , 'P' }   ,
+            { "loopback"        , no_argument         , 0   , 'k' }   ,
+            { "write-follows"   , no_argument         , 0   , 'K' }   ,
+            { "dump-err"        , no_argument         , 0   , 'e' }   ,
+            { "no-rx"           , no_argument         , 0   , 'r' }   ,
+            { "no-tx"           , no_argument         , 0   , 't' }   ,
+            { "rx-delay"        , required_argument   , 0   , 'l' }   ,
+            { "tx-delay"        , required_argument   , 0   , 'a' }   ,
+            { "tx-bytes"        , required_argument   , 0   , 'w' }   ,
+            { "tx-time"         , required_argument   , 0   , 'o' }   ,
+            { "rx-time"         , required_argument   , 0   , 'i' }   ,
+            { "ascii"           , no_argument         , 0   , 'A' }   ,
+            { 0                 , 0                   , 0   ,  0  }   ,
+        };
+        // clang-format on
+        int c = getopt_long(argc, argv, short_options, long_options, &option_index);
 
-		int c = getopt_long(argc, argv, short_options,
-				long_options, &option_index);
+        if (c == EOF)
+        {
+            break;
+        }
 
-		if (c == EOF) {
-			break;
-		}
+        switch (c)
+        {
+            case 0:
+            case 'h':
+                display_help();
+                exit(0);
+                break;
+            case 'b':
+                clopts.baud = atoi(optarg);
+                break;
+            case 'p':
+                clopts.port = strdup(optarg);
+                break;
+            case 'd':
+                clopts.divisor = strtol(optarg, NULL, 0);
+                break;
+            case 'R':
+                clopts.rx_dump = 1;
+                clopts.rx_dump_ascii = !strcmp(optarg, "ascii");
+                break;
+            case 'T':
+                clopts.tx_detailed = 1;
+                break;
+            case 's':
+                clopts.stats = 1;
+                break;
+            case 'S':
+                clopts.stop_on_error = 1;
+                break;
+            case 'y':
+            {
+                char* endptr;
+                clopts.single_byte = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'z':
+            {
+                char* endptr;
+                clopts.another_byte = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'c':
+                clopts.rts_cts = 1;
+                break;
+            case 'B':
+                clopts .two_stop_bit = 1;
+                break;
+            case 'P':
+                clopts.parity = 1;
+                clopts.odd_parity = (!strcmp(optarg, "mark") || !strcmp(optarg, "odd"));
+                clopts.stick_parity = (!strcmp(optarg, "mark") || !strcmp(optarg, "space"));
+                break;
+            case 'k':
+                clopts.loopback = 1;
+                break;
+            case 'K':
+                clopts.write_after_read = 1;
+                break;
+            case 'e':
+                clopts.dump_err = 1;
+                break;
+            case 'r':
+                clopts.no_rx = 1;
+                break;
+            case 't':
+                clopts.no_tx = 1;
+                break;
+            case 'l':
+            {
+                char* endptr;
+                clopts.rx_delay = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'a':
+            {
+                char* endptr;
+                clopts.tx_delay = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'w':
+            {
+                char* endptr;
+                clopts.tx_bytes = strtol(optarg, &endptr, 0);
+                break;
+            }
+            /* case 'q': */
+            /* { */
+            /*     char* endptr; */
+            /*     clopts.rs485_after_delay = strtol(optarg, &endptr, 0); */
+            /*     clopts.rs485_before_delay = strtol(endptr + 1, &endptr, 0); */
+            /*     break; */
+            /* } */
+            /* case 'Q': */
+            /*     clopts.rs485_rts_after_send = 1; */
+            /*     break; */
+            case 'o':
+            {
+                char* endptr;
+                clopts.tx_time = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'i':
+            {
+                char* endptr;
+                clopts.rx_time = strtol(optarg, &endptr, 0);
+                break;
+            }
+            case 'A':
+                clopts.ascii_range = 1;
+                break;
+        }
 
-		switch (c) {
-		case 0:
-		case 'h':
-			display_help();
-			exit(0);
-			break;
-		case 'b':
-			_cl_baud = atoi(optarg);
-			break;
-		case 'p':
-			_cl_port = strdup(optarg);
-			break;
-		case 'd':
-			_cl_divisor = strtol(optarg, NULL, 0);
-			break;
-		case 'R':
-			_cl_rx_dump = 1;
-			_cl_rx_dump_ascii = !strcmp(optarg, "ascii");
-			break;
-		case 'T':
-			_cl_tx_detailed = 1;
-			break;
-		case 's':
-			_cl_stats = 1;
-			break;
-		case 'S':
-			_cl_stop_on_error = 1;
-			break;
-		case 'y': {
-			char * endptr;
-			_cl_single_byte = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'z': {
-			char * endptr;
-			_cl_another_byte = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'c':
-			_cl_rts_cts = 1;
-			break;
-		case 'B':
-			_cl_2_stop_bit = 1;
-			break;
-		case 'P':
-			_cl_parity = 1;
-			_cl_odd_parity = (!strcmp(optarg, "mark")||!strcmp(optarg, "odd"));
-			_cl_stick_parity = (!strcmp(optarg, "mark")||!strcmp(optarg, "space"));
-			break;
-		case 'k':
-			_cl_loopback = 1;
-			break;
-		case 'K':
-			_cl_write_after_read = 1;
-			break;
-		case 'e':
-			_cl_dump_err = 1;
-			break;
-		case 'r':
-			_cl_no_rx = 1;
-			break;
-		case 't':
-			_cl_no_tx = 1;
-			break;
-		case 'l': {
-			char *endptr;
-			_cl_rx_delay = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'a': {
-			char *endptr;
-			_cl_tx_delay = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'w': {
-			char *endptr;
-			_cl_tx_bytes = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'q': {
-			char *endptr;
-			_cl_rs485_after_delay = strtol(optarg, &endptr, 0);
-			_cl_rs485_before_delay = strtol(endptr+1, &endptr, 0);
-			break;
-		}
-		case 'Q':
-			_cl_rs485_rts_after_send = 1;
-			break;
-		case 'o': {
-			char *endptr;
-			_cl_tx_time = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'i': {
-			char *endptr;
-			_cl_rx_time = strtol(optarg, &endptr, 0);
-			break;
-		}
-		case 'A':
-			_cl_ascii_range = 1;
-			break;
-		}
-	}
+
+    }
+
+    if (clopts.baud && !clopts.divisor)
+        clopts.baud = get_baud(clopts.baud);
+    else
+        clopts.baud = B115200;
 }
 
 static void dump_serial_port_stats(void)
 {
-	struct serial_icounter_struct icount = { 0 };
+    struct serial_icounter_struct icount = { 0 };
 
-	printf("%s: count for this session: rx=%lld, tx=%lld, rx err=%lld\n", _cl_port, _read_count, _write_count, _error_count);
+    printf("%s: count for this session: rx=%lld, tx=%lld, rx err=%lld\n", clopts.port, stats._read_count,
+           stats._write_count, stats._error_count);
 
-	/* int ret = ioctl(_fd, TIOCGICOUNT, &icount); */
-	/* if (ret < 0) { */
-	/* 	perror("Error getting TIOCGICOUNT"); */
-	/* } else { */
-	/* 	printf("%s: TIOCGICOUNT: ret=%i, rx=%i, tx=%i, frame = %i, overrun = %i, parity = %i, brk = %i, buf_overrun = %i\n", */
-	/* 			_cl_port, ret, icount.rx, icount.tx, icount.frame, icount.overrun, icount.parity, icount.brk, */
-	/* 			icount.buf_overrun); */
-	/* } */
 }
 
 static unsigned char next_count_value(unsigned char c)
 {
 	c++;
-	if (_cl_ascii_range && c == 127)
+	if (clopts.ascii_range && c == 127)
 		c = 32;
 	return c;
 }
@@ -469,10 +534,10 @@ static unsigned char next_count_value(unsigned char c)
 static void process_read_data(void)
 {
 	unsigned char rb[1024];
-	int c = read(_fd, &rb, sizeof(rb));
+	int c = read(stats._fd, &rb, sizeof(rb));
 	if (c > 0) {
-		if (_cl_rx_dump) {
-			if (_cl_rx_dump_ascii)
+		if (clopts.rx_dump) {
+			if (clopts.rx_dump_ascii)
 				dump_data_ascii(rb, c);
 			else
 				dump_data(rb, c);
@@ -481,21 +546,21 @@ static void process_read_data(void)
 		// verify read count is incrementing
 		int i;
 		for (i = 0; i < c; i++) {
-			if (rb[i] != _read_count_value) {
-				if (_cl_dump_err) {
+			if (rb[i] != stats._read_count_value) {
+				if (clopts.dump_err) {
 					printf("Error, count: %lld, expected %02x, got %02x\n",
-							_read_count + i, _read_count_value, rb[i]);
+							stats._read_count + i, stats._read_count_value, rb[i]);
 				}
-				_error_count++;
-				if (_cl_stop_on_error) {
+				stats._error_count++;
+				if (clopts.stop_on_error) {
 					dump_serial_port_stats();
 					exit(-EIO);
 				}
-				_read_count_value = rb[i];
+				stats._read_count_value = rb[i];
 			}
-			_read_count_value = next_count_value(_read_count_value);
+			stats._read_count_value = next_count_value(stats._read_count_value);
 		}
-		_read_count += c;
+		stats._read_count += c;
 	}
 }
 
@@ -503,16 +568,16 @@ static void process_write_data(void)
 {
 	ssize_t count = 0;
 	ssize_t actual_write_size = 0;
-	int repeat = (_cl_tx_bytes == 0);
+	int repeat = (clopts.tx_bytes == 0);
 
 	do
 	{
-		if (_cl_write_after_read == 0) {
-			actual_write_size = _write_size;
+		if (clopts.write_after_read == 0) {
+			actual_write_size = stats._write_size;
 		} else {
-			actual_write_size = _read_count > _write_count ? _read_count - _write_count : 0;
-			if (actual_write_size > _write_size) {
-				actual_write_size = _write_size;
+			actual_write_size = stats._read_count > stats._write_count ? stats._read_count - stats._write_count : 0;
+			if (actual_write_size > stats._write_size) {
+				actual_write_size = stats._write_size;
 			}
 		}
 		if (actual_write_size == 0) {
@@ -521,11 +586,11 @@ static void process_write_data(void)
 
 		ssize_t i;
 		for (i = 0; i < actual_write_size; i++) {
-			_write_data[i] = _write_count_value;
-			_write_count_value = next_count_value(_write_count_value);
+			stats._write_data[i] = stats._write_count_value;
+			stats._write_count_value = next_count_value(stats._write_count_value);
 		}
 
-		ssize_t c = write(_fd, _write_data, actual_write_size);
+		ssize_t c = write(stats._fd, stats._write_data, actual_write_size);
 
 		if (c < 0) {
 			if (errno != EAGAIN) {
@@ -537,58 +602,58 @@ static void process_write_data(void)
 		count += c;
 
 		if (c < actual_write_size) {
-			_write_count_value = _write_data[c];
+			stats._write_count_value = stats._write_data[c];
 			repeat = 0;
 		}
 	} while (repeat);
 
-	_write_count += count;
+	stats._write_count += count;
 
-	if (_cl_tx_detailed)
+	if (clopts.tx_detailed)
 		printf("wrote %zd bytes\n", count);
 }
 
 
-static void setup_serial_port(int baud)
+static void setup_serial_port()
 {
 	struct termios newtio;
 	struct serial_rs485 rs485;
 	int ret;
 
-	_fd = open(_cl_port, O_RDWR | O_NONBLOCK);
+	stats._fd = open(clopts.port, O_RDWR | O_NONBLOCK);
 
-	if (_fd < 0) {
+	if (stats._fd < 0) {
 		ret = -errno;
 		perror("Error opening serial port");
 		exit(ret);
 	}
 
 	/* Lock device file */
-	if (flock(_fd, LOCK_EX | LOCK_NB) < 0) {
+	if (flock(stats._fd, LOCK_EX | LOCK_NB) < 0) {
 		ret = -errno;
 		perror("Error failed to lock device file");
 		exit(ret);
 	}
 
-	bzero(&newtio, sizeof(newtio)); /* clear struct for new port settings */
+	memset(&newtio, 0, sizeof(newtio)); /* clear struct for new port settings */
 
 	/* man termios get more info on below settings */
-	newtio.c_cflag = baud | CS8 | CLOCAL | CREAD;
+	newtio.c_cflag = clopts.baud | CS8 | CLOCAL | CREAD;
 
-	if (_cl_rts_cts) {
+	if (clopts.rts_cts) {
 		newtio.c_cflag |= CRTSCTS;
 	}
 
-	if (_cl_2_stop_bit) {
+	if (clopts.two_stop_bit) {
 		newtio.c_cflag |= CSTOPB;
 	}
 
-	if (_cl_parity) {
+	if (clopts.parity) {
 		newtio.c_cflag |= PARENB;
-		if (_cl_odd_parity) {
+		if (clopts.odd_parity) {
 			newtio.c_cflag |= PARODD;
 		}
-		if (_cl_stick_parity) {
+		if (clopts.stick_parity) {
 			newtio.c_cflag |= CMSPAR;
 		}
 	}
@@ -604,36 +669,36 @@ static void setup_serial_port(int baud)
 	newtio.c_cc[VTIME] = 5;
 
 	/* now clean the modem line and activate the settings for the port */
-	tcflush(_fd, TCIOFLUSH);
-	tcsetattr(_fd,TCSANOW,&newtio);
+	tcflush(stats._fd, TCIOFLUSH);
+	tcsetattr(stats._fd,TCSANOW,&newtio);
 
 	/* enable/disable rs485 direction control, first check if RS485 is supported */
-	if(ioctl(_fd, TIOCGRS485, &rs485) < 0) {
-		if (_cl_rs485_after_delay >= 0) {
-			/* error could be because hardware is missing rs485 support so only print when actually trying to activate it */
-			perror("Error getting RS-485 mode");
-		}
-	} else {
-		if (_cl_rs485_after_delay >= 0) {
-			/* enable RS485 */
-			rs485.flags |= SER_RS485_ENABLED | SER_RS485_RX_DURING_TX |
-				(_cl_rs485_rts_after_send ? SER_RS485_RTS_AFTER_SEND : SER_RS485_RTS_ON_SEND);
-			rs485.flags &= ~(_cl_rs485_rts_after_send ? SER_RS485_RTS_ON_SEND : SER_RS485_RTS_AFTER_SEND);
-			rs485.delay_rts_after_send = _cl_rs485_after_delay;
-			rs485.delay_rts_before_send = _cl_rs485_before_delay;
-			if(ioctl(_fd, TIOCSRS485, &rs485) < 0) {
-				perror("Error setting RS-485 mode");
-			}
-		} else {
-			/* disable RS485 */
-			rs485.flags &= ~(SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND);
-			rs485.delay_rts_after_send = 0;
-			rs485.delay_rts_before_send = 0;
-			if(ioctl(_fd, TIOCSRS485, &rs485) < 0) {
-				perror("Error setting RS-232 mode");
-			}
-		}
-	}
+	/* if(ioctl(stats._fd, TIOCGRS485, &rs485) < 0) { */
+	/* 	if (clopts.rs485_after_delay >= 0) { */
+	/* 		/\* error could be because hardware is missing rs485 support so only print when actually trying to activate it *\/ */
+	/* 		perror("Error getting RS-485 mode"); */
+	/* 	} */
+	/* } else { */
+	/* 	if (clopts.rs485_after_delay >= 0) { */
+	/* 		/\* enable RS485 *\/ */
+	/* 		rs485.flags |= SER_RS485_ENABLED | SER_RS485_RX_DURING_TX | */
+	/* 			(clopts.rs485_rts_after_send ? SER_RS485_RTS_AFTER_SEND : SER_RS485_RTS_ON_SEND); */
+	/* 		rs485.flags &= ~(clopts.rs485_rts_after_send ? SER_RS485_RTS_ON_SEND : SER_RS485_RTS_AFTER_SEND); */
+	/* 		rs485.delay_rts_after_send = clopts.rs485_after_delay; */
+	/* 		rs485.delay_rts_before_send = clopts.rs485_before_delay; */
+	/* 		if(ioctl(stats._fd, TIOCSRS485, &rs485) < 0) { */
+	/* 			perror("Error setting RS-485 mode"); */
+	/* 		} */
+	/* 	} else { */
+	/* 		/\* disable RS485 *\/ */
+	/* 		rs485.flags &= ~(SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND); */
+	/* 		rs485.delay_rts_after_send = 0; */
+	/* 		rs485.delay_rts_before_send = 0; */
+	/* 		if(ioctl(stats._fd, TIOCSRS485, &rs485) < 0) { */
+	/* 			perror("Error setting RS-232 mode"); */
+	/* 		} */
+	/* 	} */
+	/* } */
 }
 
 static int diff_ms(const struct timespec *t1, const struct timespec *t2)
@@ -652,16 +717,161 @@ static int diff_ms(const struct timespec *t1, const struct timespec *t2)
 static int compute_error_count(void)
 {
 	long long int result;
-	if (_cl_no_rx == 1 || _cl_no_tx == 1)
-		result = _error_count;
+	if (clopts.no_rx == 1 || clopts.no_tx == 1)
+		result = stats._error_count;
 	else
-		result = llabs(_write_count - _read_count) + _error_count;
+		result = llabs(stats._write_count - stats._read_count) + stats._error_count;
 
 	return (result > 125) ? 125 : (int)result;
 }
 
+void initialize_stats()
+{
+    set_modem_lines(stats._fd, clopts.loopback ? TIOCM_LOOP : 0, TIOCM_LOOP);
+    stats._write_size = (clopts.tx_bytes == 0) ? 1024 : clopts.tx_bytes;
+    stats._write_data = malloc(stats._write_size);
+    if (stats._write_data == NULL)
+    {
+        fprintf(stderr, "ERROR: Memory allocation failed\n");
+        exit(-ENOMEM);
+    }
+
+    if (clopts.ascii_range)
+    {
+        stats._read_count_value = stats._write_count_value = 32;
+    }
+}
+
+void process_poll_results(int retval, 	struct pollfd *serial_poll)
+{
+    if (retval == -1)
+    {
+        perror("poll()");
+    }
+    else if (retval)
+    {
+        if (serial_poll->revents & POLLIN)
+        {
+            if (clopts.rx_delay)
+            {
+                // only read if it has been rx-delay ms
+                // since the last read
+                if (diff_ms(&timing.current, &timing.last_read) > clopts.rx_delay)
+                {
+                    process_read_data();
+                    timing.last_read = timing.current;
+                }
+            }
+            else
+            {
+                process_read_data();
+                timing.last_read = timing.current;
+            }
+        }
+
+        if (serial_poll->revents & POLLOUT)
+        {
+            if (clopts.tx_delay)
+            {
+                // only write if it has been tx-delay ms
+                // since the last write
+                if (diff_ms(&timing.current, &timing.last_write) > clopts.tx_delay)
+                {
+                    process_write_data();
+                    timing.last_write = timing.current;
+                }
+            }
+            else
+            {
+                process_write_data();
+                timing.last_write = timing.current;
+            }
+        }
+    }
+}
+
+void calculate_timing(struct time_stats_t *timing)
+{
+    if (diff_ms(&timing->current, &timing->last_timeout) > 1000)
+    {
+        int rx_timeout, tx_timeout;
+
+        // Has it been over two seconds since we transmitted or received data?
+        rx_timeout = (!clopts.no_rx && diff_ms(&timing->current, &timing->last_read) > 2000);
+        tx_timeout = (!clopts.no_tx && diff_ms(&timing->current, &timing->last_write) > 2000);
+        // Special case - we don't want to warn about receive
+        // timeouts at the end of a loopback test (where we are
+        // no longer transmitting and the receive count equals
+        // the transmit count).
+        if (clopts.no_tx && stats._write_count != 0 && stats._write_count == stats._read_count)
+        {
+            rx_timeout = 0;
+        }
+        if (rx_timeout || tx_timeout)
+        {
+            const char* s;
+            if (rx_timeout)
+            {
+                printf("%s: No data received for %.1fs.", clopts.port,
+                       (double)diff_ms(&timing->current, &timing->last_read) / 1000);
+                s = " ";
+            }
+            else
+            {
+                s = "";
+            }
+            if (tx_timeout)
+            {
+                printf("%sNo data transmitted for %.1fs.", s, (double)diff_ms(&timing->current, &timing->last_write) / 1000);
+            }
+            printf("\n");
+            timing->last_timeout = timing->current;
+        }
+    }
+
+    if (clopts.stats)
+    {
+        if (timing->current.tv_sec - timing->last_stat.tv_sec > 5)
+        {
+            dump_serial_port_stats();
+            timing->last_stat = timing->current;
+        }
+    }
+}
 
 
+void start_timing(struct time_stats_t *timing)
+{
+    clock_gettime(CLOCK_MONOTONIC, &timing->start_time);
+    timing->last_stat      = timing->start_time;
+    timing->last_timeout   = timing->start_time;
+    timing->last_read      = timing->start_time;
+    timing->last_write     = timing->start_time;
+}
+
+void show_stats(struct pollfd *serial_poll)
+{
+    if (clopts.tx_time)
+    {
+        if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.tx_time)
+        {
+            clopts.tx_time = 0;
+            clopts.no_tx = 1;
+            serial_poll->events &= ~POLLOUT;
+            printf("Stopped transmitting.\n");
+        }
+    }
+    if (clopts.rx_time)
+    {
+        if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.rx_time)
+        {
+            clopts.rx_time = 0;
+            clopts.no_rx = 1;
+            serial_poll->events &= ~POLLIN;
+            printf("Stopped receiving.\n");
+        }
+    }
+}
 
 int main(int argc, char * argv[])
 {
@@ -669,192 +879,67 @@ int main(int argc, char * argv[])
 
 	atexit(&exit_handler);
         signal(SIGINT, &exit_handler);
+	process_command_line(argc, argv);
 
-	process_options(argc, argv);
-
-	if (!_cl_port) {
+	if (!clopts.port) {
 		fprintf(stderr, "ERROR: Port argument required\n");
 		display_help();
 		exit(-EINVAL);
 	}
-
-	int baud = B115200;
-
-	if (_cl_baud && !_cl_divisor)
-		baud = get_baud(_cl_baud);
-
-	if (baud <= 0 || _cl_divisor) {
+	if (clopts.baud <= 0 || clopts.divisor) {
 		printf("NOTE: non standard baud rate, trying custom divisor\n");
-		baud = B38400;
-		setup_serial_port(B38400);
-		set_baud_divisor(_cl_baud, _cl_divisor);
+		clopts.baud = B115200;
+		setup_serial_port(clopts.baud);
+		/* set_baud_divisor(clopts.baud, clopts.divisor); */
 	} else {
-		setup_serial_port(baud);
-		/*
-		 * The flag ASYNC_SPD_CUST might have already been set, so
-		 * clear it to avoid confusing the kernel uart dirver.
-		 */
+		setup_serial_port(clopts.baud);
 		clear_custom_speed_flag();
 	}
 
-	set_modem_lines(_fd, _cl_loopback ? TIOCM_LOOP : 0, TIOCM_LOOP);
 
-	if (_cl_single_byte >= 0) {
-		unsigned char data[2];
-		int bytes = 1;
-		int written;
-		data[0] = (unsigned char)_cl_single_byte;
-		if (_cl_another_byte >= 0) {
-			data[1] = (unsigned char)_cl_another_byte;
-			bytes++;
-		}
-		written = write(_fd, &data, bytes);
-		if (written < 0) {
-			int ret = errno;
-			perror("write()");
-			exit(ret);
-		} else if (written != bytes) {
-			fprintf(stderr, "ERROR: write() returned %d, not %d\n", written, bytes);
-			exit(-EIO);
-		}
-		return 0;
-	}
+        initialize_stats();
 
-	_write_size = (_cl_tx_bytes == 0) ? 1024 : _cl_tx_bytes;
-
-	_write_data = malloc(_write_size);
-	if (_write_data == NULL) {
+	set_modem_lines(stats._fd, clopts.loopback ? TIOCM_LOOP : 0, TIOCM_LOOP);
+	stats._write_size = (clopts.tx_bytes == 0) ? 1024 : clopts.tx_bytes;
+	stats._write_data = malloc(stats._write_size);
+	if (stats._write_data == NULL) {
 		fprintf(stderr, "ERROR: Memory allocation failed\n");
 		exit(-ENOMEM);
 	}
-
-	if (_cl_ascii_range) {
-		_read_count_value = _write_count_value = 32;
+	if (clopts.ascii_range) {
+		stats._read_count_value = stats._write_count_value = 32;
 	}
 
 	struct pollfd serial_poll;
-	serial_poll.fd = _fd;
-	if (!_cl_no_rx) {
+	serial_poll.fd = stats._fd;
+	if (!clopts.no_rx) {
 		serial_poll.events |= POLLIN;
 	} else {
 		serial_poll.events &= ~POLLIN;
 	}
 
-	if (!_cl_no_tx) {
+	if (!clopts.no_tx) {
 		serial_poll.events |= POLLOUT;
 	} else {
 		serial_poll.events &= ~POLLOUT;
 	}
 
-	struct timespec start_time, last_stat, last_timeout, last_read, last_write;
+        start_timing( &timing );
 
-	clock_gettime(CLOCK_MONOTONIC, &start_time);
-	last_stat = start_time;
-	last_timeout = start_time;
-	last_read = start_time;
-	last_write = start_time;
-
-	while (!(_cl_no_rx && _cl_no_tx)) {
-		struct timespec current;
+	while (!(clopts.no_rx && clopts.no_tx)) {
 		int retval = poll(&serial_poll, 1, 1000);
-
-		clock_gettime(CLOCK_MONOTONIC, &current);
-
-		if (retval == -1) {
-			perror("poll()");
-		} else if (retval) {
-			if (serial_poll.revents & POLLIN) {
-				if (_cl_rx_delay) {
-					// only read if it has been rx-delay ms
-					// since the last read
-					if (diff_ms(&current, &last_read) > _cl_rx_delay) {
-						process_read_data();
-						last_read = current;
-					}
-				} else {
-					process_read_data();
-					last_read = current;
-				}
-			}
-
-			if (serial_poll.revents & POLLOUT) {
-				if (_cl_tx_delay) {
-					// only write if it has been tx-delay ms
-					// since the last write
-					if (diff_ms(&current, &last_write) > _cl_tx_delay) {
-						process_write_data();
-						last_write = current;
-					}
-				} else {
-					process_write_data();
-					last_write = current;
-				}
-			}
-		}
-
+		clock_gettime(CLOCK_MONOTONIC, &timing.current);
+                process_poll_results( retval, &serial_poll );
 		// Has it been at least a second since we reported a timeout?
-		if (diff_ms(&current, &last_timeout) > 1000) {
-			int rx_timeout, tx_timeout;
+                calculate_timing(&timing);
+                show_stats(&serial_poll);
 
-			// Has it been over two seconds since we transmitted or received data?
-			rx_timeout = (!_cl_no_rx && diff_ms(&current, &last_read) > 2000);
-			tx_timeout = (!_cl_no_tx && diff_ms(&current, &last_write) > 2000);
-			// Special case - we don't want to warn about receive
-			// timeouts at the end of a loopback test (where we are
-			// no longer transmitting and the receive count equals
-			// the transmit count).
-			if (_cl_no_tx && _write_count != 0 && _write_count == _read_count) {
-				rx_timeout = 0;
-			}
-
-			if (rx_timeout || tx_timeout) {
-				const char *s;
-				if (rx_timeout) {
-					printf("%s: No data received for %.1fs.",
-					       _cl_port, (double)diff_ms(&current, &last_read) / 1000);
-					s = " ";
-				} else {
-					s = "";
-				}
-				if (tx_timeout) {
-					printf("%sNo data transmitted for %.1fs.",
-					       s, (double)diff_ms(&current, &last_write) / 1000);
-				}
-				printf("\n");
-				last_timeout = current;
-			}
-		}
-
-		if (_cl_stats) {
-			if (current.tv_sec - last_stat.tv_sec > 5) {
-				dump_serial_port_stats();
-				last_stat = current;
-			}
-		}
-
-		if (_cl_tx_time) {
-			if (current.tv_sec - start_time.tv_sec >= _cl_tx_time) {
-				_cl_tx_time = 0;
-				_cl_no_tx = 1;
-				serial_poll.events &= ~POLLOUT;
-				printf("Stopped transmitting.\n");
-			}
-		}
-
-		if (_cl_rx_time) {
-			if (current.tv_sec - start_time.tv_sec >= _cl_rx_time) {
-				_cl_rx_time = 0;
-				_cl_no_rx = 1;
-				serial_poll.events &= ~POLLIN;
-				printf("Stopped receiving.\n");
-			}
-		}
 	}
 
-	tcdrain(_fd);
+	tcdrain(stats._fd);
 	dump_serial_port_stats();
-	set_modem_lines(_fd, 0, TIOCM_LOOP);
-	tcflush(_fd, TCIOFLUSH);
+	set_modem_lines(stats._fd, 0, TIOCM_LOOP);
+	tcflush(stats._fd, TCIOFLUSH);
 
 	return compute_error_count();
 }
