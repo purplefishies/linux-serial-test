@@ -64,6 +64,10 @@ typedef struct cmdopts_t
     int rx_time ;
     int ascii_range ;
     int write_after_read ;
+    int count;
+    int select;
+    fd_set sensor_fds;
+    int timeout;
 } cmdopts_t ;
 
 
@@ -77,7 +81,7 @@ cmdopts_t clopts = (cmdopts_t){
     .rx_dump = 0,
     .rx_dump_ascii = 0,
     .tx_detailed = 0,
-    .stats = 0,
+    .stats = 1,
     .stop_on_error = 0,
     .single_byte = -1,
     .another_byte = -1,
@@ -97,6 +101,8 @@ cmdopts_t clopts = (cmdopts_t){
     .rx_time = 0,
     .ascii_range = 0,
     .write_after_read = 0,
+    .select = 0,
+    .timeout = 1000
 };
 
 typedef struct serial_stats_t
@@ -125,6 +131,24 @@ serial_stats_t stats = (serial_stats_t){
     ._error_count = 0,  
 };
 
+typedef enum poll_type_t { 
+    USE_POLL = 0,
+    USE_SELECT = 1
+}poll_type_t ;
+
+typedef union pollselect_t {
+    struct pollfd poll;
+    fd_set select;
+} pollselect_t;
+
+typedef struct fdselect_t {
+    pollselect_t ps;
+    poll_type_t type;
+}fdselect_t ;
+
+fdselect_t fdselect;
+
+
 typedef struct time_stats_t 
 {
     struct timespec start_time;
@@ -138,7 +162,7 @@ typedef struct time_stats_t
 
 time_stats_t timing = (time_stats_t){0};
 
-void exit_handler(int a)
+void exit_handler(void)
 {
     clopts.no_rx = clopts.no_tx = 1;
     dump_serial_port_stats();
@@ -301,7 +325,6 @@ static int get_baud(int baud)
 void set_modem_lines(int fd, int bits, int mask)
 {
 	int status, ret;
-
 	/* if (ioctl(fd, TIOCMGET, &status) < 0) { */
 	/* 	ret = -errno; */
 	/* 	perror("TIOCMGET failed"); */
@@ -319,36 +342,37 @@ void set_modem_lines(int fd, int bits, int mask)
 
 static void display_help(void)
 {
-	printf("Usage: linux-serial-test [OPTION]\n"
-			"\n"
-			"  -h, --help\n"
-			"  -b, --baud         Baud rate, 115200, etc (115200 is default)\n"
-			"  -p, --port         Port (/dev/ttyS0, etc) (must be specified)\n"
-			"  -d, --divisor      UART Baud rate divisor (can be used to set custom baud rates)\n"
-			"  -R, --rx_dump      Dump Rx data (ascii, raw)\n"
-			"  -T, --detailed_tx  Detailed Tx data\n"
-			"  -s, --stats        Dump serial port stats every 5s\n"
-			"  -S, --stop-on-err  Stop program if we encounter an error\n"
-			"  -y, --single-byte  Send specified byte to the serial port\n"
-			"  -z, --second-byte  Send another specified byte to the serial port\n"
-			"  -c, --rts-cts      Enable RTS/CTS flow control\n"
-			"  -B, --2-stop-bit   Use two stop bits per character\n"
-			"  -P, --parity       Use parity bit (odd, even, mark, space)\n"
-			"  -k, --loopback     Use internal hardware loop back\n"
-			"  -K, --write-follow Write follows the read count (can be used for multi-serial loopback)\n"
-			"  -e, --dump-err     Display errors\n"
-			"  -r, --no-rx        Don't receive data (can be used to test flow control)\n"
-			"                     when serial driver buffer is full\n"
-			"  -t, --no-tx        Don't transmit data\n"
-			"  -l, --rx-delay     Delay between reading data (ms) (can be used to test flow control)\n"
-			"  -a, --tx-delay     Delay between writing data (ms)\n"
-			"  -w, --tx-bytes     Number of bytes for each write (default is to repeatedly write 1024 bytes\n"
-			"                     until no more are accepted)\n"
-			"  -o, --tx-time      Number of seconds to transmit for (defaults to 0, meaning no limit)\n"
-			"  -i, --rx-time      Number of seconds to receive for (defaults to 0, meaning no limit)\n"
-			"  -A, --ascii        Output bytes range from 32 to 126 (default is 0 to 255)\n"
-			"\n"
-	      );
+    printf("Usage: linux-serial-test [OPTION]\n"
+           "\n"
+           "  -h, --help\n"
+           "  -b, --baud         Baud rate, 115200, etc (115200 is default)\n"
+           "  -p, --port         Port (/dev/ttyS0, etc) (must be specified)\n"
+           "  -d, --divisor      UART Baud rate divisor (can be used to set custom baud rates)\n"
+           "  -R, --rx_dump      Dump Rx data (ascii, raw)\n"
+           /* "  -T, --detailed_tx  Detailed Tx data\n" */
+           /* "  -s, --stats        Dump serial port stats every 5s\n" */
+           /* "  -S, --stop-on-err  Stop program if we encounter an error\n" */
+           /* "  -y, --single-byte  Send specified byte to the serial port\n" */
+           /* "  -z, --second-byte  Send another specified byte to the serial port\n" */
+           /* "  -c, --rts-cts      Enable RTS/CTS flow control\n" */
+           /* "  -B, --2-stop-bit   Use two stop bits per character\n" */
+           /* "  -P, --parity       Use parity bit (odd, even, mark, space)\n" */
+           "  -C, --count        Stop after this many bytes has been written\n"
+           "  -k, --loopback     Use internal hardware loop back\n"
+           "  -K, --write-follow Write follows the read count (can be used for multi-serial loopback)\n"
+           "  -e, --dump-err     Display errors\n"
+           "  -r, --no-rx        Don't receive data (can be used to test flow control)\n"
+           "                     when serial driver buffer is full\n"
+           "  -t, --no-tx        Don't transmit data\n"
+           "  -l, --rx-delay     Delay between reading data (ms) (can be used to test flow control)\n"
+           "  -a, --tx-delay     Delay between writing data (ms)\n"
+           "  -w, --tx-bytes     Number of bytes for each write (default is to repeatedly write 1024 bytes\n"
+           "                     until no more are accepted)\n"
+           "  -o, --tx-time      Number of seconds to transmit for (defaults to 0, meaning no limit)\n"
+           "  -i, --rx-time      Number of seconds to receive for (defaults to 0, meaning no limit)\n"
+           "  -A, --ascii        Output bytes range from 32 to 126 (default is 0 to 255)\n"
+           "\n"
+           );
 }
 
 static void process_command_line(int argc, char * argv[])
@@ -364,13 +388,16 @@ static void process_command_line(int argc, char * argv[])
             { "port"            , required_argument   , 0   , 'p' }   ,
             { "divisor"         , required_argument   , 0   , 'd' }   ,
             { "rx_dump"         , required_argument   , 0   , 'R' }   ,
-            { "detailed_tx"     , no_argument         , 0   , 'T' }   ,
-            { "stats"           , no_argument         , 0   , 's' }   ,
-            { "stop-on-err"     , no_argument         , 0   , 'S' }   ,
-            { "single-byte"     , no_argument         , 0   , 'y' }   ,
-            { "second-byte"     , no_argument         , 0   , 'z' }   ,
-            { "rts-cts"         , no_argument         , 0   , 'c' }   ,
-            { "2-stop-bit"      , no_argument         , 0   , 'B' }   ,
+            { "select"          , no_argument         , 0   , 'S' }   ,
+            { "timeout"         , required_argument   , 0   , 'T' }   ,
+            /* { "detailed_tx"     , no_argument         , 0   , 'T' }   , */
+            /* { "stats"           , no_argument         , 0   , 's' }   , */
+            /* { "stop-on-err"     , no_argument         , 0   , 'S' }   , */
+            /* { "single-byte"     , no_argument         , 0   , 'y' }   , */
+            /* { "second-byte"     , no_argument         , 0   , 'z' }   , */
+            /* { "rts-cts"         , no_argument         , 0   , 'c' }   , */
+            /* { "2-stop-bit"      , no_argument         , 0   , 'B' }   , */
+            { "count"           , required_argument   , 0   , 'C' }   ,
             { "parity"          , required_argument   , 0   , 'P' }   ,
             { "loopback"        , no_argument         , 0   , 'k' }   ,
             { "write-follows"   , no_argument         , 0   , 'K' }   ,
@@ -413,32 +440,48 @@ static void process_command_line(int argc, char * argv[])
                 clopts.rx_dump = 1;
                 clopts.rx_dump_ascii = !strcmp(optarg, "ascii");
                 break;
-            case 'T':
-                clopts.tx_detailed = 1;
-                break;
-            case 's':
-                clopts.stats = 1;
-                break;
             case 'S':
-                clopts.stop_on_error = 1;
+                clopts.select = 1;
                 break;
-            case 'y':
-            {
-                char* endptr;
-                clopts.single_byte = strtol(optarg, &endptr, 0);
+
+           /* "  -T, --detailed_tx  Detailed Tx data\n" */
+           /* "  -s, --stats        Dump serial port stats every 5s\n" */
+           /* "  -S, --stop-on-err  Stop program if we encounter an error\n" */
+           /* "  -y, --single-byte  Send specified byte to the serial port\n" */
+           /* "  -z, --second-byte  Send another specified byte to the serial port\n" */
+           /* "  -c, --rts-cts      Enable RTS/CTS flow control\n" */
+           /* "  -B, --2-stop-bit   Use two stop bits per character\n" */
+           /* "  -P, --parity       Use parity bit (odd, even, mark, space)\n" */
+
+            case 'T':
+                clopts.timeout = atoi(optarg);
                 break;
-            }
-            case 'z':
-            {
-                char* endptr;
-                clopts.another_byte = strtol(optarg, &endptr, 0);
-                break;
-            }
-            case 'c':
-                clopts.rts_cts = 1;
-                break;
-            case 'B':
-                clopts .two_stop_bit = 1;
+            /* case 's': */
+            /*     clopts.stats = 1; */
+            /*     break; */
+            /* case 'S': */
+            /*     clopts.stop_on_error = 1; */
+            /*     break; */
+            /* case 'y': */
+            /* { */
+            /*     char* endptr; */
+            /*     clopts.single_byte = strtol(optarg, &endptr, 0); */
+            /*     break; */
+            /* } */
+            /* case 'z': */
+            /* { */
+            /*     char* endptr; */
+            /*     clopts.another_byte = strtol(optarg, &endptr, 0); */
+            /*     break; */
+            /* } */
+            /* case 'c': */
+            /*     clopts.rts_cts = 1; */
+            /*     break; */
+            /* case 'B': */
+            /*     clopts .two_stop_bit = 1; */
+            /*     break; */
+            case 'C':
+                clopts.count = atoi(optarg);
                 break;
             case 'P':
                 clopts.parity = 1;
@@ -478,16 +521,6 @@ static void process_command_line(int argc, char * argv[])
                 clopts.tx_bytes = strtol(optarg, &endptr, 0);
                 break;
             }
-            /* case 'q': */
-            /* { */
-            /*     char* endptr; */
-            /*     clopts.rs485_after_delay = strtol(optarg, &endptr, 0); */
-            /*     clopts.rs485_before_delay = strtol(endptr + 1, &endptr, 0); */
-            /*     break; */
-            /* } */
-            /* case 'Q': */
-            /*     clopts.rs485_rts_after_send = 1; */
-            /*     break; */
             case 'o':
             {
                 char* endptr;
@@ -512,6 +545,19 @@ static void process_command_line(int argc, char * argv[])
         clopts.baud = get_baud(clopts.baud);
     else
         clopts.baud = B115200;
+
+    if (!clopts.port) {
+        fprintf(stderr, "ERROR: Port argument required\n");
+        display_help();
+        exit(-EINVAL);
+    }
+    
+    if (clopts.baud <= 0 || clopts.divisor) {
+        printf("NOTE: non standard baud rate, trying custom divisor\n");
+        clopts.baud = B115200;
+        /* set_baud_divisor(clopts.baud, clopts.divisor); */
+    }
+
 }
 
 static void dump_serial_port_stats(void)
@@ -564,7 +610,9 @@ static void process_read_data(void)
 	}
 }
 
-static void process_write_data(void)
+
+
+void process_write_data(void)
 {
 	ssize_t count = 0;
 	ssize_t actual_write_size = 0;
@@ -589,7 +637,9 @@ static void process_write_data(void)
 			stats._write_data[i] = stats._write_count_value;
 			stats._write_count_value = next_count_value(stats._write_count_value);
 		}
-
+                if ( clopts.no_tx )
+                    break;
+                
 		ssize_t c = write(stats._fd, stats._write_data, actual_write_size);
 
 		if (c < 0) {
@@ -604,10 +654,15 @@ static void process_write_data(void)
 		if (c < actual_write_size) {
 			stats._write_count_value = stats._write_data[c];
 			repeat = 0;
-		}
+		} else if ( c == actual_write_size ) {
+                    repeat = 0;
+                }
 	} while (repeat);
 
 	stats._write_count += count;
+
+        if ( clopts.count > 0 && stats._write_count > clopts.count ) 
+            clopts.no_tx = 1;
 
 	if (clopts.tx_detailed)
 		printf("wrote %zd bytes\n", count);
@@ -740,18 +795,72 @@ void initialize_stats()
     {
         stats._read_count_value = stats._write_count_value = 32;
     }
+
+    stats._write_size = (clopts.tx_bytes == 0) ? 1024 : clopts.tx_bytes;
+    stats._write_data = malloc(stats._write_size);
+    if (stats._write_data == NULL) {
+        fprintf(stderr, "ERROR: Memory allocation failed\n");
+        exit(-ENOMEM);
+    }
+    if (clopts.ascii_range) {
+		stats._read_count_value = stats._write_count_value = 32;
+    }
 }
 
-void process_poll_results(int retval, 	struct pollfd *serial_poll)
+/* void process_results(int retval, 	struct pollfd *serial_poll) */
+void process_results(int retval, 	fdselect_t *fds)
 {
     if (retval == -1)
     {
-        perror("poll()");
+        if ( fds->type == USE_POLL ) { 
+            perror("poll()");
+        } else {
+            perror("select()");
+        }
     }
     else if (retval)
     {
-        if (serial_poll->revents & POLLIN)
+        if( fds->type == USE_POLL ) 
         {
+            if (fds->ps.poll.revents & POLLIN)
+            {
+                if (clopts.rx_delay)
+                {
+                    // only read if it has been rx-delay ms
+                    // since the last read
+                    if (diff_ms(&timing.current, &timing.last_read) > clopts.rx_delay)
+                    {
+                        process_read_data();
+                        timing.last_read = timing.current;
+                    }
+                }
+                else
+                {
+                    process_read_data();
+                    timing.last_read = timing.current;
+                }
+            }
+
+            if (fds->ps.poll.revents & POLLOUT)
+            {
+                if (clopts.tx_delay)
+                {
+                    // only write if it has been tx-delay ms
+                    // since the last write
+                    if (diff_ms(&timing.current, &timing.last_write) > clopts.tx_delay)
+                    {
+                        process_write_data();
+                        timing.last_write = timing.current;
+                    }
+                }
+                else
+                {
+                    process_write_data();
+                    timing.last_write = timing.current;
+                }
+            }
+        } 
+        else {
             if (clopts.rx_delay)
             {
                 // only read if it has been rx-delay ms
@@ -766,25 +875,6 @@ void process_poll_results(int retval, 	struct pollfd *serial_poll)
             {
                 process_read_data();
                 timing.last_read = timing.current;
-            }
-        }
-
-        if (serial_poll->revents & POLLOUT)
-        {
-            if (clopts.tx_delay)
-            {
-                // only write if it has been tx-delay ms
-                // since the last write
-                if (diff_ms(&timing.current, &timing.last_write) > clopts.tx_delay)
-                {
-                    process_write_data();
-                    timing.last_write = timing.current;
-                }
-            }
-            else
-            {
-                process_write_data();
-                timing.last_write = timing.current;
             }
         }
     }
@@ -849,91 +939,145 @@ void start_timing(struct time_stats_t *timing)
     timing->last_write     = timing->start_time;
 }
 
-void show_stats(struct pollfd *serial_poll)
+void show_stats(fdselect_t *fds)
 {
-    if (clopts.tx_time)
-    {
-        if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.tx_time)
+    if (fds->type == USE_POLL ) {
+        if (clopts.tx_time)
         {
-            clopts.tx_time = 0;
-            clopts.no_tx = 1;
-            serial_poll->events &= ~POLLOUT;
-            printf("Stopped transmitting.\n");
+            if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.tx_time)
+            {
+                clopts.tx_time = 0;
+                clopts.no_tx = 1;
+                fds->ps.poll.events &= ~POLLOUT;
+                printf("Stopped transmitting.\n");
+            }
         }
-    }
-    if (clopts.rx_time)
-    {
-        if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.rx_time)
+        if (clopts.rx_time)
         {
-            clopts.rx_time = 0;
-            clopts.no_rx = 1;
-            serial_poll->events &= ~POLLIN;
-            printf("Stopped receiving.\n");
+            if (timing.current.tv_sec - timing.start_time.tv_sec >= clopts.rx_time)
+            {
+                clopts.rx_time = 0;
+                clopts.no_rx = 1;
+                fds->ps.poll.events &= ~POLLIN;
+                printf("Stopped receiving.\n");
+            }
         }
+    } else {
+        
+
     }
 }
+/* void * */
+/* sensor_event_loop(__attribute__((unused)) void *arg) */
+/* { */
+/*     fd_set sensor_fds; */
+/*     FD_ZERO(&sensor_fds); */
+/*     /\* for (index = 0; index < sensor_ctl.count; index++) *\/ */
+/*     /\* { *\/ */
+/*     /\*     if (sensor_ctl.sensor[index].sensor_fd > 0) *\/ */
+/*     /\*         FD_SET(sensor_ctl.sensor[index].sensor_fd, &sensor_fds); *\/ */
+/*     /\* } *\/ */
+/*     int fd; */
+    
+/*     FD_SET( fd, &sensor_fds ); */
+
+/*     /\* Waiting. *\/ */
+/*     /\* ready = select(sensor_ctl.max_fd + 1, &sensor_fds, NULL, NULL, NULL); *\/ */
+/*     /\* if ((ready == -1) && (errno == EINTR)) *\/ */
+/*     /\* { *\/ */
+/*     /\*     /\\* Someone rudely interrupted us. Please continue. *\\/ *\/ */
+/*     /\*     continue; *\/ */
+/*     /\* } *\/ */
+/*     /\* /\\* Update packet count for SubView logging. *\\/ *\/ */
+/*     /\* packet_count++; *\/ */
+/*     /\* for (index = 0; index < sensor_ctl.count; index++) *\/ */
+/*     /\* { *\/ */
+/*     /\*     if (FD_ISSET(sensor_ctl.sensor[index].sensor_fd, &sensor_fds)) *\/ */
+/*     /\*     { *\/ */
+/*     /\*         (*sensor_ctl.sensor[index].handle_data)( *\/ */
+/*     /\*                                                 sensor_ctl.sensor[index].priv_state, *\/ */
+/*     /\*                                                 packet_count); *\/ */
+/*     /\*     } *\/ */
+/*     /\* } *\/ */
+/* } */
+
+void handler(int sig)
+{
+    clopts.no_rx = 1;
+    clopts.no_tx = 1;
+    return ;
+}
+
+void setup_fdselect( fdselect_t *fs )
+{
+    fs->type = ( clopts.select ? USE_SELECT : USE_POLL );
+    if ( fs->type == USE_POLL ) {
+        fs->ps.poll.fd = stats._fd;
+	if (!clopts.no_rx) {
+		fs->ps.poll.events |= POLLIN;
+	} else {
+		fs->ps.poll.events &= ~POLLIN;
+	}
+	if (!clopts.no_tx) {
+		fs->ps.poll.events |= POLLOUT;
+	} else {
+		fs->ps.poll.events &= ~POLLOUT;
+	}
+    } else {
+        FD_ZERO(&fs->ps.select );
+        FD_SET( stats._fd, &fs->ps.select );
+    }
+}
+
+int wait_for_events( fdselect_t *fs , int timeout )
+{
+    int retval;
+    if ( fs->type == USE_POLL ) {
+	 retval = poll(&fs->ps.poll, 1, timeout);
+    } else {
+        struct timeval to = (struct timeval){.tv_sec = (timeout/1000 <= 0 ? 1 : timeout/1000)  , .tv_usec=0};
+        FD_ZERO(&fs->ps.select);
+        FD_SET(stats._fd,&fs->ps.select);
+        retval = select(FD_SETSIZE,&fs->ps.select, NULL, NULL, &to );
+    }
+    return retval;
+}
+
 
 int main(int argc, char * argv[])
 {
 	printf("Linux serial test app\n");
 
 	atexit(&exit_handler);
-        signal(SIGINT, &exit_handler);
+        signal(SIGINT, &handler);
 	process_command_line(argc, argv);
 
-	if (!clopts.port) {
-		fprintf(stderr, "ERROR: Port argument required\n");
-		display_help();
-		exit(-EINVAL);
-	}
-	if (clopts.baud <= 0 || clopts.divisor) {
-		printf("NOTE: non standard baud rate, trying custom divisor\n");
-		clopts.baud = B115200;
-		setup_serial_port(clopts.baud);
-		/* set_baud_divisor(clopts.baud, clopts.divisor); */
-	} else {
-		setup_serial_port(clopts.baud);
-		clear_custom_speed_flag();
-	}
-
+        setup_serial_port(clopts.baud);
+        if (clopts.divisor) 
+            clear_custom_speed_flag();
 
         initialize_stats();
-
 	set_modem_lines(stats._fd, clopts.loopback ? TIOCM_LOOP : 0, TIOCM_LOOP);
-	stats._write_size = (clopts.tx_bytes == 0) ? 1024 : clopts.tx_bytes;
-	stats._write_data = malloc(stats._write_size);
-	if (stats._write_data == NULL) {
-		fprintf(stderr, "ERROR: Memory allocation failed\n");
-		exit(-ENOMEM);
-	}
-	if (clopts.ascii_range) {
-		stats._read_count_value = stats._write_count_value = 32;
-	}
-
-	struct pollfd serial_poll;
-	serial_poll.fd = stats._fd;
-	if (!clopts.no_rx) {
-		serial_poll.events |= POLLIN;
-	} else {
-		serial_poll.events &= ~POLLIN;
-	}
-
-	if (!clopts.no_tx) {
-		serial_poll.events |= POLLOUT;
-	} else {
-		serial_poll.events &= ~POLLOUT;
-	}
-
+        setup_fdselect( &fdselect ) ;
         start_timing( &timing );
 
 	while (!(clopts.no_rx && clopts.no_tx)) {
-		int retval = poll(&serial_poll, 1, 1000);
-		clock_gettime(CLOCK_MONOTONIC, &timing.current);
-                process_poll_results( retval, &serial_poll );
-		// Has it been at least a second since we reported a timeout?
-                calculate_timing(&timing);
-                show_stats(&serial_poll);
+            int retval;
+            if ( clopts.no_tx ) { /* Receiver */
 
+                retval = wait_for_events( &fdselect, clopts.timeout );
+		clock_gettime(CLOCK_MONOTONIC, &timing.current);
+                process_results( retval, &fdselect );
+
+            } else if( clopts.no_rx ) { /* Transmitter */
+
+                retval = wait_for_events( &fdselect , clopts.timeout );
+                process_results( retval, &fdselect );
+
+            }
+            // Has it been at least a second since we reported a timeout?
+            calculate_timing(&timing);
+            show_stats(&fdselect);
 	}
 
 	tcdrain(stats._fd);
